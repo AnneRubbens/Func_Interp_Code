@@ -1,0 +1,117 @@
+%    f weakly convex (param 1), bounded subgradient (param B)
+%    x_{k+1} = x_k - gamma * g(x_k)
+%    y_{k}= x_k-1/2 g(y_k)
+%    target: 
+%    max 1/(K+1) sum_i ||y_i-x_i||^2  st   f(x_0)-f_\star+||x_0-y_0||^2 == R^2
+%%%Input: 
+%K:number of iterations
+%R:initial distance to the minimum
+%B: bound on the subgradient
+%gamma: stepsize
+%Output: bound on the error after K iterations
+
+function bound=gradientyalmip(K,R,B, gamma)
+
+verbose = 0;
+
+
+
+%    P = [x_s x_0   g_0   g_1   ...   g_K gy_0 ... gy_K Cxsx0 ... Cy_Ky_{K-1}]  et G = P^T P
+%    F = [ f_s      f_0   f_1   ...   f_K  fy_0 ... fy_K]
+
+dimF   = 2*(K+1);
+nbPts  = 2*(K+1)+1; % x_*, x_0, ..., x_K, y_0, ..., y_K
+dimG   = nbPts+10*K+6;
+
+%  Vector to access to the different elements of F and G
+xs   = zeros(dimG,1); 
+gs   = zeros(dimG,1);
+fs   = zeros(dimF,1);
+
+x = zeros(dimG,(K+1));% [x_0 ... x_K]
+y = zeros(dimG,(K+1));%[y_0 ... y_K]
+g = zeros(dimG,K+1);% [g_0 ... g_K]
+gy = zeros(dimG,K+1);% [gy_0 ... gy_K]
+f = zeros(dimF,(K+1));% [f_0 ... f_K]
+fy = zeros(dimF,(K+1));% [fy_0 ... fy_K]
+z=zeros(dimG,10*K+6);% Cxy
+
+x(1,1)     = 1; 
+g(2:K+2,:) = eye(K+1);
+gy(K+3:2*K+3,:) = eye(K+1);
+z(2*K+4:end,:)=eye(10*K+6);
+f(1:K+1,:) = eye((K+1));
+fy(K+2:2*K+2,:) = eye((K+1));
+
+%%Algorithm
+for i = 1:K
+    x(:,i+1) = x(:,i) - gamma * g(:,i);
+end
+for i = 1:K+1
+    y(:,i) = x(:,i) - 0.5 * gy(:,i);
+end
+
+
+
+XX = [xs x y];
+GG = [gs g gy z];
+FF = [fs f fy];
+
+
+%%
+
+G = sdpvar(dimG); % commande yalmip: G est symmétrique de taille dimG x dimG
+F = sdpvar(1,dimF); 
+cons = ( G >= 0); % G est SDP
+
+%Initial condition
+cons = cons + ( F*(fy(:,1)-fs)+ (y(:,1)-x(:,1)).'*G*(y(:,1)-x(:,1)) <= R^2) ;%( (xk(0)-xs).'*G*(xk(0)-xs) == 1); %; % ( (xk(0)-xs).'*G*(xk(0)-xs) == 1)  pour ||x0-xs||^2 == 1
+% Interpolation
+k=nbPts+1;
+for i = 1:nbPts
+    for j = 1:nbPts
+        if i ~= j
+            %%tilde p
+            if i==1 || j==1 || (j==i+1 && i~=K+2) || (j==i-1 && i~=K+3) || j==i+(K+1) || j==i-(K+1)
+                xi = XX(:,i); gi = GG(:,i); fi = FF(:,i);
+                xj = XX(:,j); gj = GG(:,j); fj = FF(:,j);
+                zij=GG(:,k);
+                k=k+1;
+                cons = cons + ( F*(fj-fi) + gj'*G*(xi-xj)-0.5* (xi-xj).'*G*(xi-xj)+0.5* (xi-zij).'*G*(xi-zij)<= 0);  
+                cons = cons + ( (gj+xj-zij).'*G*(gj+xj-zij)<= L^2);
+                nBcons=nBcons+2;
+            %%p, to fasten the computations
+            else
+                xi = XX(:,i); gi = GG(:,i); fi = FF(:,i);
+                xj = XX(:,j); gj = GG(:,j); fj = FF(:,j);
+                cons = cons + ( F*(fj-fi) + gj'*G*(xi-xj)-0.5* (xi-xj).'*G*(xi-xj)<= 0);   %
+            end
+        end        
+    end
+end
+for i=1:K+1
+    cons=cons+(F*(f(:,i)-fs)>=0);
+    cons=cons+(F*(fy(:,i)-fs)>=0);
+    cons=cons+(g(:,i)'*G*g(:,i)<=L^2);
+    cons=cons+(gy(:,i)'*G*gy(:,i)<=L^2);
+end
+
+%Objective
+Z=sdpvar(1,1);
+Z=gy(:,1)'*G*gy(:,1);
+for i=2:K+1
+    Z=Z+gy(:,i)'*G*gy(:,i);
+end
+obj = Z/(K+1); %gk(K)'*G*gk(K);
+
+
+solver_opt      = sdpsettings('solver','mosek','verbose',verbose);
+
+
+solverDetails   = optimize(cons,-obj,solver_opt)
+
+
+% OUTPUT
+
+bound=double(obj);
+end
