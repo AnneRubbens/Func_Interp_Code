@@ -1,0 +1,232 @@
+clc
+%Search for a counterexample, 4 added points max, smooth convex functions
+%(L=1)
+[X,G,F,x,CounterEx]=test_interpolability_Gram(@p,4,1);
+if CounterEx==true
+    disp('CounterExample Found');
+else
+    disp('No counterExample Found');
+end
+
+
+% Goal: obtain a counterexample to p's interpolability, starting from data
+% set X_0, G_0, F_0 or by default from X_0=[0], G_0=[0], F_0=[0].
+
+%This function implements Heuristic "Heuri" from A. Rubbens & J. M.
+%Hendrickx, "A constraint-based approach to function interpolation, with
+%application to performance estimation for weakly convex optimisation.", in
+%case p is Gram-Representable.
+
+%%Input:
+%-@p: function [consx,nConstraints]=p(Gnew,Fnew,xi,fi,gi,x,f,g,param):
+%function with output consx=[pix, pxi] and nConstraints=2*l (where l is the
+%size of constraints p), where p is linear in function values and scalar
+%products of the iterates and gradients, e.g. pix= fx>=fi+<gi,x-xi>. the input parameters allow accessing to fx,fi,x,xi,gx,gi as:
+%fi=Fnew*fi, fx=Fnew*x, <gi,xi>= gi'Gnew xi, ...
+%-Nmax:maximal number of points to add to S to obtain a counterexample.
+%-param: parameters required to implement p (e.g. constant of
+%continuity/parameter of string convexity)
+%-X_0,G_0,F_0: initial data set, satisfying p. By default, X_0=[0],
+%G_0=[0], F_0=[0].
+
+%%Output: 
+%-X,G,F: data set satisfying p.
+%-x: last data point added.
+%-CounterEx: if true, counterexample found to the interpolability of p: p
+%cannot be extended to x. Else, no counterexample found.
+
+function [X,G,F,x,CounterEx]=test_interpolability_Gram(p,Nmax,param,X_0,G_0,F_0)
+verbose=0;
+%%%Initialisation
+if nargin==2
+    param=[];
+end
+if nargin==3
+    F=[0];
+    G=zeros(3);
+    G(2,2)=1;
+    N=1;
+else
+    N=size(F_0,1);
+    d=size(G_0,2);
+    if N==1
+        x=rand(d,1);
+    else
+        alpha=1/N*ones(1,N);
+        x=alpha*X_0
+        P=[X_0;x;G_0];
+        G=P*P';
+        F=F_0';
+    end
+end
+
+%%%Iterative contruction of data set S=X,G,F
+CounterEx=false;
+while N<=Nmax && CounterEx==false
+    %%% Evaluation of extensibility of p at x.
+    [obj,Gnew,Fnew,N]=evaluation(G,F,N,0, verbose,param);
+    %%%Counterexample Found
+    if obj>10^(-4)
+        CounterEx=true;
+        [V,D]=eig(double(G));
+        tol=1e-8;
+        eigenV=diag(D); eigenV(eigenV < tol)=0;
+        new_D=diag(eigenV); [~,P]=qr(sqrt(new_D)*V.');
+        P=P(1:sum(eigenV>0),:)';
+        %%%Obtention of a minimal counterexample: rounding and elimination
+        %%%of unuseful data points.
+        k=2;
+        RoundEx=false;
+        while RoundEx==false && k<=5
+            x=round(P(N,:),k);
+            X=round(P(1:N-1,:),k);
+            G=round(P(N+1:2*N-1,:),k);
+            P1=[X;x;G];
+            GG=P1*P1';
+            N=N-1;
+            [obj,Gnew,Fnew,N]=evaluation(GG,round(F(1:N),k),N,0, verbose,param);
+            k=k+1;
+            if obj>10^(-4)
+                RoundEx=true;
+            end
+        end
+        
+        if RoundEx==false
+            x=P(N,:);
+            X=P(1:N-1,:);
+            G=P(N+1:2*N-1,:); 
+        else
+            F=round(F(1:N-1),k-1);
+        end
+        while N>=4 && obj>10^(-4)
+            N=N-2;
+            XX=X(1:N,:);
+            GG=G(1:N,:);
+            FF=F(1:N);
+            P=[XX;x;GG];
+            G=P*P';
+            [obj,Gnew,Fnew,N]=evaluation(G,FF,N,0, verbose,param);
+        end
+        if obj>10^(-4)
+            N=N-1;
+        end
+        %%%Final counterexample.
+        X=X(1:N,:);
+        G=G(1:N,:);
+        F=F(1:N);
+    %%%No Counterexample Found
+    else
+        %%%%Computation of an extremal extension
+        N=N-1;
+        [obj,G,F,N]=evaluation(G,F,N,1, verbose,param);
+        [V,D]=eig(double(G));%
+        tol=1e-5; 
+        eigenV=diag(D); eigenV(eigenV < tol)=0;
+        new_D=diag(eigenV); [~,P]=qr(sqrt(new_D)*V.');
+        P=P(1:sum(eigenV>0),:)';
+        X=P(1:N,:);
+        G=P(N+1:2*N,:);
+        d=size(P,2);
+        %%%Random additional point.
+        x=round(-5+10*rand(1,d),2);
+        P=[X;x;G];
+        G=P*P';
+    end
+end
+end
+
+%%% This function evaluates extensibility of p at x, if objective=0, and
+%%% computes an extremal extension if objective=1. In the first case,
+%%% extensibility is possible if obj is negative, not possible otherwise.
+%%% In the first case, a solution minimizing the rank of G is computed.
+
+%%Input:
+%-G=P^TP, P=[X,x,G], F, where S=(X,G,F) satisfy p and x is the additional
+%data point
+%-N: size of S
+%-Objective:0 (evaluation of extensibility of p at x)/ 1 (maximal extension
+%of p at x)
+%-param: parameters of constraint p.
+
+%%Output
+%-obj: when objective=0, obj is negative if exentsibility of p at x is
+%possible, positive else.
+%-Gnew=Pnew^TPnew, Pnew=[X,x,G,gx], Fnew=[F,fx] where gx,fx extend p at x,
+%in an extremal way if objective=1.
+%-N=N+1
+
+function [obj,Gnew,Fnew,N]=evaluation(G,F,N,objective, verbose, param)
+    dimG=2*N+1;
+    %Variables fx,gx
+    B = sdpvar(dimG,1);
+    gnew=sdpvar(1,1);
+    t=sdpvar(1,1);
+    fnew = sdpvar(1,1);
+
+    Gnew=[G,B;B',gnew];
+    Fnew=[F,fnew];
+    N=N+1;
+    dimGnew=2*N;
+    
+    %%Access to the elements of Gnew, Fnew
+    xx = zeros(dimGnew,N);
+    gg = zeros(dimGnew,N);
+    ff = eye(N);
+
+    xx(1:N,:)=eye(N);
+    gg(N+1:2*N,:)=eye(N);
+    
+    
+    cons=(Gnew>=0);
+    %Bounding of the extension
+    cons=cons+(-10^3*ones(1,N)<=Fnew<=10^3*ones(1,N));
+    cons=cons+(10^3*eye(dimGnew)-Gnew>=0);
+    
+    %Interpolation constraints
+    x=xx(:,N);
+    g=gg(:,N);
+    f=ff(:,N);
+    for i=1:N-1
+        xi=xx(:,i);
+        gi=gg(:,i);
+        fi=ff(:,i);
+        [consx, nConstraints]=p(Gnew,Fnew,xi,fi,gi,x,f,g,param);
+        
+        if objective==0
+            for j=1:nConstraints
+                cons=cons+(consx(j)>=-t);
+            end
+        elseif objective==1
+            for j=1:nConstraints
+                cons=cons+(consx(j)>=0);
+            end
+        else
+        end
+    end
+    solver_opt      = sdpsettings('solver','mosek','verbose',verbose);
+    if objective ==0
+        obj =t;
+    else
+        obj=consx(1);%+consx(3);
+    end
+    solverDetails   = optimize(cons,obj,solver_opt);
+    %%%Minimization of rank of Gnew
+    if objective==0
+        cons = cons + ( obj <= double(obj)+1e-5);
+        obj  = trace(Gnew);
+        solver_opt      = sdpsettings('solver','mosek','verbose',verbose);
+        solverDetails   = optimize(cons,obj,solver_opt);
+        obj=double(t);
+    else
+        obj=double(obj);
+    end
+    Gnew=double(Gnew);
+    Fnew=double(Fnew);
+end
+
+%%Instance of p, smooth convex functions
+function [consx,nConstraints]=p(Gnew,Fnew,xi,fi,gi,x,f,g,param)
+L=param(1);
+nConstraints=4;
+consx=[Fnew*(f-fi)-gi'*Gnew*(x-xi),-(Fnew*(f-fi)-gi'*Gnew*(x-xi)-L/2*(x-xi)'*Gnew*(x-xi)),Fnew*(fi-f)-g'*Gnew*(xi-x),-(Fnew*(fi-f)-g'*Gnew*(xi-x)-L/2*(x-xi)'*Gnew*(x-xi))];
+end
