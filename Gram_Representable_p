@@ -1,0 +1,250 @@
+clc
+
+%Search for a counterexample, 4 added points max
+[X,G,F,x,CounterEx]=test_interpolability(@p,3,2,[1/2,1])%,X,G,F,xadd)
+if CounterEx==true
+    disp('CounterExample Found');
+else
+    disp('CounterExample Found');
+end
+
+% Goal: obtain a counterexample of dimension d to p's interpolability, starting from data
+% set X_0, G_0, F_0 or by default from X_0=[0], G_0=[0], F_0=[0].
+
+%This function implements Heuristic "Heuri" from A. Rubbens & J. M.
+%Hendrickx, "A constraint-based approach to function interpolation, with
+%application to performance estimation for weakly convex optimisation.", in
+%case p is Gram-Representable.
+
+%%Input:
+%-@p: function [cons, gradCons, nConstraints] = p(x,fx,gx,xi,gi,fi,param) :
+%function with output cons=[pix, pxi], gradCons the derivative of y with respect to fx, gx, 
+% and nConstraints=2*l (where l is the size of constraints p), for any kind of p. 
+%The input parameters allow accessing to fx,fi,x,xi,gx,gi.
+%-Nmax:maximal number of points to add to S to obtain a counterexample.
+%-d:dimension of counterexample
+%-param: parameters required to implement p (e.g. constant of
+%continuity/parameter of string convexity)
+%-X_0,G_0,F_0: initial data set, satisfying p. By default, X_0=[0],
+%G_0=[0], F_0=[0].
+%-xadd: set of data points to iteratively add to S. By default, randomly
+%chosen.
+
+%%Output: 
+%-X,G,F: data set satisfying p.
+%-x: last data point added.
+%-CounterEx: if true, counterexample found to the interpolability of p: p
+%cannot be extended to x. Else, no counterexample found.
+
+function [X,G,F,x,CounterEx]=test_interpolability(p,Nmax,d,param,X_0,G_0,F_0,xadd)
+%Initialisation
+if nargin==4
+    F=[0];
+    X=zeros(1,d);
+    G=zeros(1,d);
+    x=zeros(1,d);
+    x(1)=1;
+    N=1;
+elseif nargin==7
+    N=size(G_0,1);
+    if N==1
+        x=zeros(1,d);
+        x(1)=1;
+    elseif N==2
+        x=1/d*ones(1,d);   
+    else
+        alpha=1/N*ones(1,N);
+        x=alpha*X_0;
+    end
+        X=X_0;
+        G=G_0;
+        F=F_0';
+else
+   N=size(F_0,1);
+   X=X_0;
+   G=G_0;
+   F=F_0;
+   iter=1;
+   x=xadd(iter,:);
+end
+%%%Iterative contruction of data set S=X,G,F
+CounterEx=false;
+while N<=Nmax && CounterEx==false
+    %%% Evaluation of extensibility of p at x.
+    [obj,Gnew,Fnew,N]=evaluation(X,G,F,x,d,N,0,param);
+    %%%Counterexample Found
+    if obj>10^(-4)
+       CounterEx=true;
+        %%Obtention of a minimal counterexample: rounding and elimination
+        %%%of unuseful data points.
+        k=2;
+        RoundEx=false;
+        while RoundEx==false && k<=5
+            xx=round(x,k);
+            XX=round(X(:,:),k);
+            GG=round(G(:,:),k);
+            FF=round(F,k)
+            N=N-1;
+            [obj,Gnew,Fnew,N]=evaluation(XX,GG,FF,x,d,N,0,param);
+            k=k+1;
+            if obj>10^(-4)
+                RoundEx=true;
+            end
+        end
+        
+        if RoundEx==true
+            x=xx;
+            X=XX;
+            G=GG; 
+            F=FF;
+        end
+        while N>=4 && obj>10^(-4)
+            N=N-2;
+            XX=X(1:N,:)
+            FF=F(1:N,:)
+            GG=G(1:N,:)
+            [obj,Gnew,Fnew,N]=evaluation(XX,GG,FF,x,d,N,0,param);
+        end
+        if obj>10^(-4)
+            N=N-1;
+        end
+         %%%Final counterexample.
+        X=X(1:N,:);
+        G=G(1:N,:);
+        F=F(1:N,:);
+    %%%No Counterexample Found
+    else
+        %%%%Computation of an extremal extension
+        N=N-1;
+        [obj,Gnew,Fnew,N]=evaluation(X,G,F,x,d,N,1,param);
+        G=[G;Gnew];
+        F=[F;Fnew];
+        X=[X;x];
+        %%%Random additional point.
+        if nargin<=7
+            x=round(-5+10*rand(1,d),2);
+            if N==2
+                x=1/d*ones(1,d);                       
+            end
+        else
+            iter=iter+1;
+            x=xadd(iter,:);
+        end
+    end
+end
+end
+
+%%% This function evaluates extensibility of p at x, if objective=0, and
+%%% computes an extremal extension if objective=1. In the first case,
+%%% extensibility is possible if obj is negative, not possible otherwise.
+%%% In the first case, a solution minimizing the rank of G is computed.
+
+%%Input:
+%-S=(X,G,F) satisfying p
+%-x: additional data point
+%-d: dimension of x
+%-N: size of S
+%-Objective:0 (evaluation of extensibility of p at x)/ 1 (maximal extension
+%of p at x)
+%-param: parameters of constraint p.
+
+%%Output
+%-obj: when objective=0, obj is negative if exentsibility of p at x is
+%possible, positive else.
+%-Gnew=[G,gx], Fnew=[F,fx] where gx,fx extend p at x, in an extremal way if objective=1.
+%-N=N+1
+
+function [obj,Gnew,Fnew,N]=evaluation(X,G,F,x,d,N,objective,param)
+    options = optimoptions(@fmincon,'Algorithm','interior-point','MaxFunctionEvaluations',100000,'SpecifyObjectiveGradient',true,'SpecifyConstraintGradient',true,'MaxIterations',100000,'ConstraintTolerance',10^(-6),'StepTolerance',10^(-10),'Display','off');
+    %Initialization
+    Y0=zeros(d+2,1);
+    fun = @(Y)funobj(Y,d);
+    %Interpolation constraints
+    nonlconstr = @(Y)constr(Y,X,G,F,x,N,objective,param);
+    %Bounding of the extension
+    A=[Y0';Y0'];
+    A(1,1)=1;
+    A(2,1)=-1;
+    b=[10;10];
+    [Y,fval,eflag,output,lambda] = fmincon(fun,Y0,A,b,[],[],[],[],nonlconstr,options);
+    obj=Y(1)
+    Gnew=Y(3:end)';
+    Fnew=Y(2);
+    N=N+1;
+end
+
+function [y,grady] = funobj(Y,d)
+grady=zeros(d+2,1);
+y=Y(1);
+grady(1)=1;
+end
+
+%%% This function builds the interpolation constraints to be imposed in "evaluation".
+
+%%Input:
+%-Y=[t,fx,gx]: extension of possible of p at x. t allows verifying
+%feasibility of the extension.
+%-S=(X,G,F) satisfying p
+%-x: additional data point
+%-d: dimension of x
+%-N: size of S
+%-Objective:0 (evaluation of extensibility of p at x)/ 1 (maximal extension
+%of p at x)
+%-param: parameters of constraint p.
+
+%%Output
+%-obj: y,grady: interpolation conditions: pix>=0 and pxi>=0 for all i if
+%and only if y<=0. Grady computes the gradient of y with respect to t, fx,
+%gx.
+%-yeq,gradyeq:[][]
+
+function [y,yeq,grady,gradyeq]=constr(Y,X,G,F,x,N,objective,param)
+    yeq=[];
+    gradyeq=[];
+
+    t=Y(1)
+    fx=Y(2)
+    gx=Y(3:end)
+    x
+    for i=1:N
+        xi=X(i,:)
+        fi=F(i); gi=G(i,:);
+        [cons,gradcons,nConstraints]=p(x,fx,gx,xi,gi,fi,param) 
+        if objective==0
+            if i==1
+                grady = zeros(length(Y),N*nConstraints);
+                y = zeros(1,N*nConstraints);
+            end
+            for j=1:nConstraints
+                y(j+nConstraints*(i-1))=cons(j)-t;
+                grady(:,j+nConstraints*(i-1))=[-1;gradcons(j,:)'];
+            end
+        else
+            if i==1
+                grady = zeros(length(Y),(N+1)*nConstraints);
+                y = zeros(1,(N+1)*nConstraints);
+            end
+            for j=1:nConstraints
+                y(j+nConstraints*(i-1))=cons(j);
+                grady(:,j+nConstraints*(i-1))=[0;gradcons(j,:)'];
+            end
+            if i==N
+                for j=1:nConstraints
+                    y(j+nConstraints*N)=-t-cons(j);
+                    grady(:,j+nConstraints*N)=[-1;-gradcons(j,:)'];
+                end
+            end
+        end
+    end
+end
+
+%Instance of p, for holder smooth functions
+function [cons, gradCons, nConstraints] = p(x,fx,gx,xi,gi,fi,param) 
+    q=param(1);
+    L=param(2);
+    nConstraints = 2; 
+
+    cons = [fi+gi*(x'-xi')+1/(q+1)/L*norm(x-xi)^(q+1)-fx,-fi-gx'*(x'-xi')+1/(q+1)/L*norm(x-xi)^(q+1)+fx]
+    gradCons = [-1 , zeros(1,length(gx));
+                1 , -(x-xi)];
+end
